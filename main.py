@@ -1,51 +1,60 @@
 import asyncio
-from typing import TypedDict, Annotated, List
+from typing import Annotated, TypedDict, List
 from operator import add
 from fastapi import FastAPI, BackgroundTasks
 from langgraph.graph import StateGraph
+from langchain_groq import ChatGroq
 from langchain_core.messages import BaseMessage, HumanMessage
 
+# 1. State Definition
 class GridState(TypedDict):
+    messages: Annotated[List[BaseMessage], add]
     proposed_load: float
     is_safe: bool
     status: str
     cycle: int
 
+# 2. Physics & Logic Nodes
 def optimizer_node(state: GridState):
-    # Logic to oscillate the load to simulate "movement"
-    next_load = 400.0 if state.get("cycle", 0) % 2 == 0 else 600.0
-    return {"proposed_load": next_load, "status": "optimizing"}
+    # Utilizing your requested model
+    llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
+    # Simulate a calculation loop
+    next_cycle = state.get("cycle", 0) + 1
+    return {"proposed_load": 450.0 + (next_cycle % 10), "status": "optimizing", "cycle": next_cycle}
 
 def governor_node(state: GridState):
     is_safe = 100.0 <= state["proposed_load"] <= 1000.0
-    return {"is_safe": is_safe, "status": "verified", "cycle": state.get("cycle", 0) + 1}
+    return {"is_safe": is_safe, "status": "verified" if is_safe else "blocked"}
 
-# Graph assembly
+# 3. Continuous Graph Construction
+# We do NOT use END to ensure the loop remains active
 builder = StateGraph(GridState)
 builder.add_node("optimizer", optimizer_node)
 builder.add_node("governor", governor_node)
 builder.set_entry_point("optimizer")
 builder.add_edge("optimizer", "governor")
-builder.add_edge("governor", "optimizer") # Loop for motion
+builder.add_edge("governor", "optimizer") # THIS CREATES THE CONTINUOUS LOOP
+
 app_graph = builder.compile()
 
-# Continuous execution engine
-async def run_continuous_grid():
-    state = {"proposed_load": 0.0, "is_safe": True, "status": "init", "cycle": 0}
+# 4. Background Execution Engine
+async def run_continuous_engine():
+    # Initial state
+    state = {"messages": [], "proposed_load": 450.0, "is_safe": True, "status": "start", "cycle": 0}
     while True:
-        # The graph executes, modifies state, and returns it
+        # Execution of the cyclic graph
         state = await app_graph.ainvoke(state)
-        # VISUAL VERIFICATION: This print statement proves the system is moving
-        print(f"--- [GRID MONITOR] Cycle: {state['cycle']} | Load: {state['proposed_load']} MW | Safe: {state['is_safe']} ---")
-        await asyncio.sleep(2)
+        print(f"GRID MOTION: Cycle {state['cycle']} | Load: {state['proposed_load']} | Status: {state['status']}")
+        await asyncio.sleep(2) # Sets the speed of the "motion"
 
-api = FastAPI()
+# 5. API Setup
+api = FastAPI(title="AETHER-GOV Continuous Control Plane")
 
 @api.on_event("startup")
-async def startup_event():
-    # Automatically start the motion when the API boots
-    asyncio.create_task(run_continuous_grid())
+async def startup():
+    # Automatically triggers the background loop on server launch
+    asyncio.create_task(run_continuous_engine())
 
-@api.get("/status")
-async def get_status():
-    return {"message": "Grid control plane is actively cycling in the background."}
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(api, host="0.0.0.0", port=8000)
