@@ -1,80 +1,55 @@
-import os
 import asyncio
-import logging
 from typing import Annotated, TypedDict, List
 from operator import add
 from fastapi import FastAPI, BackgroundTasks
-from langgraph.graph import StateGraph
-from langgraph.checkpoint.postgres import PostgresSaver
-from psycopg_pool import ConnectionPool
-from langchain_groq import ChatGroq
+from langgraph.graph import StateGraph, END
 from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_groq import ChatGroq
 
-# Configure Logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("CORE-ISOLATE")
-
-# 1. Industrial State
+# 1. State
 class GridState(TypedDict):
     messages: Annotated[List[BaseMessage], add]
     proposed_load: float
     is_safe: bool
     status: str
+    tick_count: int
 
-# 2. Physics Kernel
-def physics_governor(proposed_load: float) -> bool:
-    return 100.0 <= proposed_load <= 1000.0
-
-# 3. Agent Nodes
-def optimizer_agent(state: GridState):
-    llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
-    # Propose load (In prod, logic would derive from state["messages"])
-    return {"proposed_load": 450.0, "status": "optimized"}
+# 2. Nodes
+def optimizer_node(state: GridState):
+    # This node calculates the new load
+    # In production, swap with your Groq LLM logic
+    new_load = 450.0 
+    return {"proposed_load": new_load, "status": "optimizing", "tick_count": state.get("tick_count", 0) + 1}
 
 def governor_node(state: GridState):
-    is_safe = physics_governor(state["proposed_load"])
+    # This node validates the physics
+    is_safe = 100.0 <= state["proposed_load"] <= 1000.0
     return {"is_safe": is_safe, "status": "verified" if is_safe else "blocked"}
 
-# 4. Graph Construction
+# 3. Cyclic Graph
 builder = StateGraph(GridState)
-builder.add_node("optimizer", optimizer_agent)
+builder.add_node("optimizer", optimizer_node)
 builder.add_node("governor", governor_node)
 builder.set_entry_point("optimizer")
 builder.add_edge("optimizer", "governor")
+# FEEDBACK LOOP: The governor forces the graph to reconsider
+builder.add_edge("governor", "optimizer") 
 
-# Persistence Setup
-DB_URI = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/grid_db")
-pool = ConnectionPool(conninfo=DB_URI)
-checkpointer = PostgresSaver(pool)
-checkpointer.setup()
-app_graph = builder.compile(checkpointer=checkpointer)
+# Compile (Simplified for testing)
+app_graph = builder.compile()
 
-# 5. Continuous Execution Engine
-async def grid_heartbeat(thread_id: str):
-    config = {"configurable": {"thread_id": thread_id}}
-    logger.info(f"Initiating continuous control loop for thread: {thread_id}")
-    
+# 4. Continuous Engine
+async def grid_engine(thread_id: str):
+    state = {"messages": [], "proposed_load": 0.0, "tick_count": 0}
     while True:
-        try:
-            # We invoke the graph; it pulls the previous state from Postgres
-            await app_graph.ainvoke(
-                {"messages": [HumanMessage(content="Tick")]}, 
-                config=config
-            )
-            logger.info("Cycle complete: System stable.")
-            await asyncio.sleep(5)  # 5-second interval
-        except Exception as e:
-            logger.error(f"Loop failure: {e}")
-            break
+        # EXECUTION: This force-runs the cycle continuously
+        state = await app_graph.ainvoke(state)
+        print(f"Cycle {state['tick_count']}: Load={state['proposed_load']}, Status={state['status']}")
+        await asyncio.sleep(2) # Speed of the "motion"
 
-# 6. Production API
-api = FastAPI(title="AETHER-GOV Control Plane")
+api = FastAPI()
 
-@api.post("/run-system/{thread_id}")
-async def start_system(thread_id: str, background_tasks: BackgroundTasks):
-    background_tasks.add_task(grid_heartbeat, thread_id)
-    return {"message": "Continuous control loop initiated.", "thread_id": thread_id}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(api, host="0.0.0.0", port=8000)
+@api.post("/start")
+async def start(bg: BackgroundTasks):
+    bg.add_task(grid_engine, "thread-01")
+    return {"status": "Engine Running"}
