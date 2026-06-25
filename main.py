@@ -1,4 +1,5 @@
 import os
+import uvicorn
 from typing import Annotated, TypedDict, List
 from operator import add
 from fastapi import FastAPI
@@ -9,14 +10,14 @@ from psycopg_pool import ConnectionPool
 from langchain_groq import ChatGroq
 from langchain_core.messages import BaseMessage, HumanMessage
 
-# 1. State Definition
+# 1. Industrial State
 class GridState(TypedDict):
     messages: Annotated[List[BaseMessage], add]
     proposed_load: float
     is_safe: bool
     status: str
 
-# 2. Deterministic Physics Governor
+# 2. Physics Kernel (Hard-Coded Safety)
 def physics_governor(proposed_load: float) -> bool:
     MAX_CAPACITY, MIN_CAPACITY = 1000.0, 100.0
     return MIN_CAPACITY <= proposed_load <= MAX_CAPACITY
@@ -34,7 +35,7 @@ def governor_node(state: GridState):
     is_safe = physics_governor(state["proposed_load"])
     return {"is_safe": is_safe, "status": "verified" if is_safe else "blocked"}
 
-# 4. Production Graph & API Setup
+# 4. Persistence & Graph
 DB_URI = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/grid_db")
 pool = ConnectionPool(conninfo=DB_URI)
 checkpointer = PostgresSaver(pool)
@@ -50,9 +51,10 @@ workflow.add_edge("adversary", "governor")
 workflow.add_edge("governor", END)
 
 app_graph = workflow.compile(checkpointer=checkpointer)
-api = FastAPI(title="CORE-ISOLATE Industrial Control Plane")
 
-# 5. API Endpoint
+# 5. Production API
+api = FastAPI(title="AETHER-GOV Control Plane")
+
 class ActionRequest(BaseModel):
     thread_id: str
     action: str
@@ -64,5 +66,4 @@ async def control_grid(req: ActionRequest):
     return {"status": result["status"], "safe": result["is_safe"], "load": result["proposed_load"]}
 
 if __name__ == "__main__":
-    import uvicorn
     uvicorn.run(api, host="0.0.0.0", port=8000)
